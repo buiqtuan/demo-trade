@@ -1,0 +1,1 @@
+"""Core configuration and utilities for Market Data Aggregator."""
