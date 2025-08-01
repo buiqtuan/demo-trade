@@ -13,6 +13,15 @@ from .base import BaseDataProvider, ProviderError, DataNotFoundError
 from ..api.schemas import Asset, Quote, AssetType, DataProvider
 from ..core.logging_config import create_logger
 
+# Import shared models with proper fallback
+try:
+    from shared_models.market_data import NewsArticle
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from shared_models.market_data import NewsArticle
+
 logger = create_logger(__name__)
 
 
@@ -310,6 +319,178 @@ class YFinanceProvider(BaseDataProvider):
         })
         
         return assets
+    
+    async def get_company_news(self, symbol: str) -> List[NewsArticle]:
+        """Get company-specific news from Yahoo Finance."""
+        if not symbol or not symbol.strip():
+            return []
+        
+        try:
+            # Use thread pool to run synchronous yfinance code
+            news_data = await asyncio.get_event_loop().run_in_executor(
+                self._executor,
+                self._fetch_news_sync,
+                symbol.upper()
+            )
+            
+            if not news_data:
+                logger.info("No company news data received from yfinance", extra={
+                    "provider": self.name,
+                    "symbol": symbol
+                })
+                return []
+            
+            articles = []
+            for item in news_data[:20]:  # Limit to 20 articles
+                try:
+                    article = self._create_news_article_from_yfinance(item, symbol)
+                    if article:
+                        articles.append(article)
+                except Exception as e:
+                    logger.warning("Failed to process yfinance news article", extra={
+                        "provider": self.name,
+                        "symbol": symbol,
+                        "error": str(e),
+                        "article_data": item
+                    })
+                    continue
+            
+            logger.info("Retrieved company news from yfinance", extra={
+                "provider": self.name,
+                "symbol": symbol,
+                "count": len(articles)
+            })
+            
+            return articles
+            
+        except Exception as e:
+            logger.error("Failed to fetch company news from yfinance", extra={
+                "provider": self.name,
+                "symbol": symbol,
+                "error": str(e)
+            })
+            # Don't raise ProviderError - just return empty list for graceful fallback
+            return []
+    
+    def _fetch_news_sync(self, symbol: str) -> List[Dict]:
+        """Synchronous function to fetch news using yfinance."""
+        try:
+            ticker = yf.Ticker(symbol)
+            news = ticker.news
+            
+            if not news:
+                logger.info("No news available for symbol", extra={
+                    "symbol": symbol,
+                    "provider": "yfinance"
+                })
+                return []
+            
+            return news
+            
+        except Exception as e:
+            logger.warning("Error fetching news for symbol", extra={
+                "symbol": symbol,
+                "error": str(e),
+                "provider": "yfinance"
+            })
+            return []
+    
+    def _create_news_article_from_yfinance(self, item: Dict, symbol: str) -> Optional[NewsArticle]:
+        """Create NewsArticle from yfinance news data."""
+        try:
+            # yfinance news structure can vary, handle different possible field names
+            title = None
+            url = None
+            timestamp = None
+            summary = None
+            source = None
+            
+            # Try different possible field names for title
+            for title_field in ['title', 'headline', 'summary']:
+                if title_field in item and item[title_field]:
+                    title = item[title_field].strip()
+                    break
+            
+            # Try different possible field names for URL
+            for url_field in ['link', 'url', 'guid']:
+                if url_field in item and item[url_field]:
+                    url = item[url_field].strip()
+                    break
+            
+            # Try different possible field names for timestamp
+            for time_field in ['providerPublishTime', 'pubDate', 'published', 'timestamp']:
+                if time_field in item and item[time_field]:
+                    try:
+                        if isinstance(item[time_field], (int, float)):
+                            # Unix timestamp
+                            timestamp = datetime.utcfromtimestamp(item[time_field])
+                        elif isinstance(item[time_field], str):
+                            # Try to parse as ISO format or other common formats
+                            try:
+                                from dateutil import parser
+                                timestamp = parser.parse(item[time_field]).replace(tzinfo=None)
+                            except ImportError:
+                                # Fallback if dateutil is not available
+                                timestamp = datetime.utcnow()
+                        break
+                    except Exception as e:
+                        logger.debug("Failed to parse timestamp", extra={
+                            "time_field": time_field,
+                            "value": item[time_field],
+                            "error": str(e)
+                        })
+                        continue
+            
+            # If no timestamp found, use current time
+            if not timestamp:
+                timestamp = datetime.utcnow()
+            
+            # Try to extract summary/description
+            for summary_field in ['summary', 'description', 'content']:
+                if summary_field in item and item[summary_field]:
+                    summary = item[summary_field].strip()
+                    break
+            
+            # Try to extract source
+            for source_field in ['publisher', 'source', 'author']:
+                if source_field in item and item[source_field]:
+                    source = item[source_field].strip()
+                    break
+            
+            # Default source if not found
+            if not source:
+                source = "Yahoo Finance"
+            
+            # Validate required fields
+            if not title or not url:
+                logger.debug("Missing required fields in yfinance news item", extra={
+                    "provider": self.name,
+                    "symbol": symbol,
+                    "title": title,
+                    "url": url,
+                    "item_keys": list(item.keys())
+                })
+                return None
+            
+            return NewsArticle(
+                title=title,
+                summary=summary,
+                url=url,
+                source=source,
+                published_at=timestamp,
+                symbols=[symbol.upper()],
+                category="company",
+                sentiment=None
+            )
+            
+        except Exception as e:
+            logger.warning("Error creating news article from yfinance data", extra={
+                "provider": self.name,
+                "symbol": symbol,
+                "error": str(e),
+                "item": item
+            })
+            return None
     
     async def disconnect(self) -> None:
         """Close connections and clean up resources."""

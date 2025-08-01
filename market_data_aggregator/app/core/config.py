@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Background task intervals (in seconds)
     asset_list_update_interval: int = Field(default=86400, env="ASSET_LIST_UPDATE_INTERVAL")  # 24 hours
     price_fetch_interval: int = Field(default=5, env="PRICE_FETCH_INTERVAL")  # 5 seconds
+    news_fetch_interval: int = Field(default=900, env="NEWS_FETCH_INTERVAL")  # 15 minutes
     
     # API Keys for data providers
     finnhub_api_key: str = Field(env="FINNHUB_API_KEY")
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
     # Cache TTL settings (in seconds)
     quotes_cache_ttl: int = Field(default=300, env="QUOTES_CACHE_TTL")  # 5 minutes
     assets_cache_ttl: int = Field(default=86400, env="ASSETS_CACHE_TTL")  # 24 hours
+    news_cache_ttl: int = Field(default=1800, env="NEWS_CACHE_TTL")  # 30 minutes
     
     # Active symbols configuration
     active_symbols: str = Field(
@@ -132,7 +134,9 @@ class ProviderConfig:
         'assets_stocks': 'assets:stocks',
         'assets_crypto': 'assets:crypto',
         'assets_forex': 'assets:forex',
-        'active_symbols': 'config:active_symbols'
+        'active_symbols': 'config:active_symbols',
+        'news_general': 'news:general',
+        'news_company': 'news:{symbol}'
     }
 
 

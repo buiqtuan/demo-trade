@@ -10,6 +10,7 @@ from schemas import (
     LeaderboardResponse, LeaderboardEntry, UserCreate, UserResponse
 )
 import crud
+from services.market_data_client import market_data_client
 
 router = APIRouter()
 
@@ -37,9 +38,19 @@ async def get_portfolio(
                 detail="Portfolio not found"
             )
         
-        # Get holdings with asset information
+        # Get holdings with current market prices
         holdings_response = []
+        total_holdings_market_value = 0.0
         for holding in portfolio.holdings:
+            # Get current price from market data
+            current_price = 0.0
+            try:
+                quote = await market_data_client.get_quote(holding.asset.symbol)
+                if quote and quote.price > 0:
+                    current_price = float(quote.price)
+            except Exception:
+                pass  # Use 0.0 as fallback
+            
             holdings_response.append(HoldingResponse(
                 holding_id=holding.holding_id,
                 portfolio_id=holding.portfolio_id,
@@ -49,17 +60,23 @@ async def get_portfolio(
                 total_cost=holding.total_cost,
                 symbol=holding.asset.symbol,
                 name=holding.asset.name,
+                current_price=Decimal(str(current_price)),
                 created_at=holding.created_at,
                 updated_at=holding.updated_at
             ))
-        
-        # Calculate total portfolio value (cash + holdings at cost basis)
-        total_holdings_value = sum(holding.total_cost for holding in portfolio.holdings)
-        total_portfolio_value = portfolio.cash_balance + total_holdings_value
-        
-        # Calculate returns
-        total_return = total_portfolio_value - portfolio.initial_balance
-        total_return_percentage = (total_return / portfolio.initial_balance * 100) if portfolio.initial_balance > 0 else 0
+            
+            # Calculate market value for portfolio total
+            if current_price > 0:
+                total_holdings_market_value += float(holding.quantity) * current_price
+            else:
+                # Fallback to cost basis if market price unavailable
+                total_holdings_market_value += float(holding.total_cost)
+
+        total_portfolio_value = float(portfolio.cash_balance) + total_holdings_market_value
+
+        # Calculate returns based on market value
+        total_return = total_portfolio_value - float(portfolio.initial_balance)
+        total_return_percentage = (total_return / float(portfolio.initial_balance) * 100) if portfolio.initial_balance > 0 else 0
         
         return PortfolioSummary(
             user_id=portfolio.user_id,

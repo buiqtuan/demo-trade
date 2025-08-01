@@ -14,6 +14,15 @@ from ..core.config import settings, provider_config
 from ..core.logging_config import create_logger
 from ..api.schemas import Quote, Asset, AssetType, DataProvider, CircuitBreakerStatus
 
+# Import shared models with proper fallback
+try:
+    from shared_models.market_data import NewsArticle
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from shared_models.market_data import NewsArticle
+
 logger = create_logger(__name__)
 
 
@@ -360,6 +369,100 @@ class CacheService:
         except Exception as e:
             logger.error("Failed to store active symbols", extra={
                 "symbols": symbols,
+                "error": str(e)
+            })
+    
+    # News Caching Methods
+    
+    async def get_general_news(self) -> List[NewsArticle]:
+        """Get general news from cache."""
+        try:
+            key = provider_config.CACHE_KEYS['news_general']
+            news_data = await self._redis.get(key)
+            
+            if not news_data:
+                return []
+            
+            news_list = json.loads(news_data)
+            articles = [NewsArticle(**article_data) for article_data in news_list]
+            
+            logger.debug("Retrieved general news from cache", extra={
+                "count": len(articles)
+            })
+            
+            return articles
+            
+        except Exception as e:
+            logger.error("Failed to get general news from cache", extra={
+                "error": str(e)
+            })
+            return []
+    
+    async def set_general_news(self, articles: List[NewsArticle]) -> None:
+        """Store general news in cache with TTL."""
+        try:
+            key = provider_config.CACHE_KEYS['news_general']
+            articles_data = [article.dict() for article in articles]
+            articles_json = json.dumps(articles_data, default=str)
+            
+            await self._redis.setex(key, settings.news_cache_ttl, articles_json)
+            
+            logger.info("Stored general news in cache", extra={
+                "count": len(articles),
+                "ttl": settings.news_cache_ttl
+            })
+            
+        except Exception as e:
+            logger.error("Failed to store general news in cache", extra={
+                "count": len(articles) if articles else 0,
+                "error": str(e)
+            })
+    
+    async def get_company_news(self, symbol: str) -> List[NewsArticle]:
+        """Get company news from cache."""
+        try:
+            key = provider_config.CACHE_KEYS['news_company'].format(symbol=symbol.upper())
+            news_data = await self._redis.get(key)
+            
+            if not news_data:
+                return []
+            
+            news_list = json.loads(news_data)
+            articles = [NewsArticle(**article_data) for article_data in news_list]
+            
+            logger.debug("Retrieved company news from cache", extra={
+                "symbol": symbol,
+                "count": len(articles)
+            })
+            
+            return articles
+            
+        except Exception as e:
+            logger.error("Failed to get company news from cache", extra={
+                "symbol": symbol,
+                "error": str(e)
+            })
+            return []
+    
+    async def set_company_news(self, symbol: str, articles: List[NewsArticle]) -> None:
+        """Store company news in cache with TTL."""
+        try:
+            key = provider_config.CACHE_KEYS['news_company'].format(symbol=symbol.upper())
+            articles_data = [article.dict() for article in articles]
+            articles_json = json.dumps(articles_data, default=str)
+            
+            await self._redis.setex(key, settings.news_cache_ttl, articles_json)
+            
+            logger.info("Stored company news in cache", extra={
+                "symbol": symbol,
+                "count": len(articles),
+                "ttl": settings.news_cache_ttl
+            })
+            
+        except Exception as e:
+            logger.error("Failed to store company news in cache", extra={
+                "symbol": symbol,
+                "count": len(articles) if articles else 0,
                 "error": str(e)
             })
     

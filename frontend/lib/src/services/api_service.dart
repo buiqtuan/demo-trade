@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../features/auth/auth_repository.dart';
 import '../models/portfolio.dart';
 import '../features/dashboard/chart_view.dart';
+import '../config/app_config.dart';
+import '../models/news_article.dart';
 
 // API service provider
 final apiServiceProvider = Provider<ApiService>((ref) {
@@ -14,8 +16,7 @@ final apiServiceProvider = Provider<ApiService>((ref) {
 class ApiService {
   final AuthRepository _authRepository;
 
-  // TODO: Update this URL to your deployed backend or use local for development
-  static const String _baseUrl = 'http://localhost:8000';
+  static const String _baseUrl = AppConfig.baseUrl;
 
   ApiService(this._authRepository);
 
@@ -39,7 +40,7 @@ class ApiService {
       }
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/portfolios/${user.uid}'),
+        Uri.parse('$_baseUrl/api/portfolios/${user.uid}'),
         headers: headers,
       );
 
@@ -61,7 +62,7 @@ class ApiService {
       final headers = await _getAuthHeaders();
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/stocks/$symbol/data'),
+        Uri.parse('$_baseUrl/api/stocks/$symbol/data'),
         headers: headers,
       );
 
@@ -93,7 +94,7 @@ class ApiService {
       };
 
       final response = await http.post(
-        Uri.parse('$_baseUrl/execute'),
+        Uri.parse('$_baseUrl/api/execute'),
         headers: headers,
         body: json.encode(requestBody),
       );
@@ -117,7 +118,7 @@ class ApiService {
       final headers = await _getAuthHeaders();
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/stocks/$symbol/price'),
+        Uri.parse('$_baseUrl/api/stocks/$symbol/price'),
         headers: headers,
       );
 
@@ -139,7 +140,7 @@ class ApiService {
       final headers = await _getAuthHeaders();
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/leaderboard'),
+        Uri.parse('$_baseUrl/api/leaderboard'),
         headers: headers,
       );
 
@@ -166,7 +167,7 @@ class ApiService {
       }
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/users/${user.uid}/rank'),
+        Uri.parse('$_baseUrl/api/users/${user.uid}/rank'),
         headers: headers,
       );
 
@@ -188,7 +189,8 @@ class ApiService {
       final headers = await _getAuthHeaders();
 
       final response = await http.get(
-        Uri.parse('$_baseUrl/stocks/search?q=${Uri.encodeComponent(query)}'),
+        Uri.parse(
+            '$_baseUrl/api/stocks/search?q=${Uri.encodeComponent(query)}'),
         headers: headers,
       );
 
@@ -220,7 +222,7 @@ class ApiService {
       };
 
       final response = await http.post(
-        Uri.parse('$_baseUrl/users'),
+        Uri.parse('$_baseUrl/api/users'),
         headers: headers,
         body: json.encode(requestBody),
       );
@@ -231,6 +233,54 @@ class ApiService {
       }
     } catch (e) {
       print('Error creating user account: $e');
+      rethrow;
+    }
+  }
+
+  /// Get general market news
+  Future<List<NewsArticle>> getGeneralNews() async {
+    try {
+      final headers = await _getAuthHeaders();
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/news/general'),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final articles = data['articles'] as List;
+        return articles
+            .map((article) => NewsArticle.fromJson(article))
+            .toList();
+      } else {
+        throw Exception('Failed to load general news: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching general news: $e');
+      rethrow;
+    }
+  }
+
+  /// Get company-specific news
+  Future<List<NewsArticle>> getCompanyNews(String symbol) async {
+    try {
+      final headers = await _getAuthHeaders();
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/news/$symbol'),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final articles = data['articles'] as List;
+        return articles
+            .map((article) => NewsArticle.fromJson(article))
+            .toList();
+      } else {
+        throw Exception('Failed to load company news: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching company news: $e');
       rethrow;
     }
   }

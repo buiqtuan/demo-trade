@@ -19,6 +19,15 @@ from ..providers.coingecko_provider import CoinGeckoProvider
 from ..providers.coinmarketcap_provider import CoinMarketCapProvider
 from ..providers.alpha_vantage_provider import AlphaVantageProvider
 
+# Import shared models with proper fallback
+try:
+    from shared_models.market_data import NewsArticle
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from shared_models.market_data import NewsArticle
+
 logger = create_logger(__name__)
 
 
@@ -31,6 +40,7 @@ class DataAggregatorService:
         self._shutdown_event = asyncio.Event()
         self._last_asset_update: Optional[datetime] = None
         self._last_price_update: Optional[datetime] = None
+        self._last_news_update: Optional[datetime] = None
         
     async def initialize(self) -> None:
         """Initialize all data providers."""
@@ -116,6 +126,10 @@ class DataAggregatorService:
         # Start price fetch task (fast loop)
         price_task = asyncio.create_task(self.run_price_fetch_loop())
         self._running_tasks.append(price_task)
+        
+        # Start news fetch task (medium frequency loop)
+        news_task = asyncio.create_task(self.run_news_fetch_loop())
+        self._running_tasks.append(news_task)
         
         logger.info("Background tasks started", extra={
             "tasks": len(self._running_tasks)
@@ -387,6 +401,197 @@ class DataAggregatorService:
             
             return {}
     
+    async def run_news_fetch_loop(self) -> None:
+        """Background task to fetch news updates from providers."""
+        logger.info("Starting news fetch loop", extra={
+            "interval": settings.news_fetch_interval
+        })
+        
+        while not self._shutdown_event.is_set():
+            try:
+                start_time = datetime.utcnow()
+                
+                # Fetch general news from Finnhub
+                await self._fetch_general_news()
+                
+                # Fetch company-specific news
+                await self._fetch_company_news()
+                
+                self._last_news_update = datetime.utcnow()
+                update_duration = (self._last_news_update - start_time).total_seconds()
+                
+                logger.info("News fetch completed", extra={
+                    "duration_seconds": update_duration
+                })
+                
+                # Set last update time in cache
+                await cache_service.set_last_update_time("news_fetch", self._last_news_update)
+                
+            except Exception as e:
+                logger.error("Error in news fetch loop", extra={
+                    "error": str(e)
+                })
+            
+            # Wait for next update cycle
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=settings.news_fetch_interval
+                )
+                break  # Shutdown event was set
+            except asyncio.TimeoutError:
+                continue  # Continue with next update cycle
+    
+    async def _fetch_general_news(self) -> None:
+        """Fetch general market news from Finnhub."""
+        try:
+            # Get Finnhub provider
+            finnhub_provider = self._providers.get('finnhub')
+            if not finnhub_provider:
+                logger.warning("Finnhub provider not available for general news")
+                return
+            
+            # Check circuit breaker
+            provider_enum = finnhub_provider.get_provider_name()
+            is_circuit_open = await cache_service.is_circuit_open(provider_enum)
+            
+            if is_circuit_open:
+                logger.info("Circuit breaker is open for Finnhub, skipping general news fetch")
+                return
+            
+            # Fetch general news
+            try:
+                if hasattr(finnhub_provider, 'get_general_news'):
+                    articles = await finnhub_provider.get_general_news()
+                    
+                    if articles:
+                        # Cache the results
+                        await cache_service.set_general_news(articles)
+                        logger.info("Fetched and cached general news", extra={
+                            "count": len(articles),
+                            "provider": "finnhub"
+                        })
+                    else:
+                        logger.warning("No general news articles received from Finnhub")
+                else:
+                    logger.warning("Finnhub provider does not support get_general_news")
+                    
+            except Exception as e:
+                logger.error("Failed to fetch general news from Finnhub", extra={
+                    "error": str(e)
+                })
+                # Trip circuit breaker on error
+                await cache_service.trip_circuit(provider_enum, str(e))
+                
+        except Exception as e:
+            logger.error("Unexpected error fetching general news", extra={
+                "error": str(e)
+            })
+    
+    async def _fetch_company_news(self) -> None:
+        """Fetch company-specific news with Finnhub primary and yfinance fallback."""
+        try:
+            # Get active symbols to track
+            active_symbols = await cache_service.get_active_symbols()
+            
+            if not active_symbols:
+                logger.warning("No active symbols to track for company news")
+                return
+            
+            # Filter to stock symbols only (news is typically for stocks)
+            stock_symbols = []
+            for symbol in active_symbols:
+                # Simple heuristic: if it doesn't contain '/' or '=X', it's likely a stock
+                if '/' not in symbol and '=X' not in symbol:
+                    stock_symbols.append(symbol)
+            
+            if not stock_symbols:
+                logger.info("No stock symbols found in active symbols list")
+                return
+            
+            logger.info("Fetching company news for symbols", extra={
+                "symbols": stock_symbols,
+                "count": len(stock_symbols)
+            })
+            
+            # Process each symbol with fallback strategy
+            for symbol in stock_symbols:
+                await self._fetch_company_news_for_symbol(symbol)
+                
+        except Exception as e:
+            logger.error("Unexpected error fetching company news", extra={
+                "error": str(e)
+            })
+    
+    async def _fetch_company_news_for_symbol(self, symbol: str) -> None:
+        """Fetch company news for a single symbol with fallback strategy."""
+        try:
+            # Step A: Try Finnhub first
+            finnhub_provider = self._providers.get('finnhub')
+            if finnhub_provider:
+                provider_enum = finnhub_provider.get_provider_name()
+                is_circuit_open = await cache_service.is_circuit_open(provider_enum)
+                
+                if not is_circuit_open:
+                    try:
+                        if hasattr(finnhub_provider, 'get_company_news'):
+                            articles = await finnhub_provider.get_company_news(symbol)
+                            
+                            # Step B: Check if we got results
+                            if articles:
+                                # Cache and move to next symbol
+                                await cache_service.set_company_news(symbol, articles)
+                                logger.debug("Fetched company news from Finnhub", extra={
+                                    "symbol": symbol,
+                                    "count": len(articles)
+                                })
+                                return
+                                
+                    except Exception as e:
+                        logger.warning("Finnhub company news fetch failed", extra={
+                            "symbol": symbol,
+                            "error": str(e)
+                        })
+                        # Trip circuit breaker
+                        await cache_service.trip_circuit(provider_enum, str(e))
+            
+            # Step C: Finnhub failed or returned empty, try yfinance
+            logger.info("Falling back to yfinance for company news", extra={
+                "symbol": symbol
+            })
+            
+            yfinance_provider = self._providers.get('yfinance')
+            if yfinance_provider:
+                try:
+                    if hasattr(yfinance_provider, 'get_company_news'):
+                        articles = await yfinance_provider.get_company_news(symbol)
+                        
+                        # Step D: If yfinance returns articles, cache them
+                        if articles:
+                            await cache_service.set_company_news(symbol, articles)
+                            logger.debug("Fetched company news from yfinance", extra={
+                                "symbol": symbol,
+                                "count": len(articles)
+                            })
+                        else:
+                            logger.debug("No company news found for symbol", extra={
+                                "symbol": symbol
+                            })
+                            
+                except Exception as e:
+                    logger.warning("yfinance company news fetch failed", extra={
+                        "symbol": symbol,
+                        "error": str(e)
+                    })
+            else:
+                logger.warning("yfinance provider not available for fallback")
+                
+        except Exception as e:
+            logger.error("Unexpected error fetching company news for symbol", extra={
+                "symbol": symbol,
+                "error": str(e)
+            })
+    
     async def get_provider_health_status(self) -> Dict[str, bool]:
         """Get health status of all providers."""
         health_status = {}
@@ -425,7 +630,8 @@ class DataAggregatorService:
         """Get timestamps of last successful updates."""
         return {
             'asset_list_update': self._last_asset_update,
-            'price_fetch': self._last_price_update
+            'price_fetch': self._last_price_update,
+            'news_fetch': self._last_news_update
         }
     
     def are_background_tasks_running(self) -> bool:

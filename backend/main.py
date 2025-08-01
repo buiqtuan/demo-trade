@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 import asyncio
 import json
 import logging
@@ -10,8 +11,9 @@ from dotenv import load_dotenv
 from database import get_db, engine
 from models import Base
 from dependencies import get_current_user
-from routers import trades, portfolios, sync
-import finnhub
+from routers import trades, portfolios, sync, news
+from services.market_data_client import market_data_client
+from middleware.error_handler import global_exception_handler, validation_exception_handler
 
 # Load environment variables
 load_dotenv()
@@ -36,6 +38,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add exception handlers
+app.add_exception_handler(Exception, global_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+
 # Create database tables
 @app.on_event("startup")
 async def startup_event():
@@ -46,9 +52,9 @@ async def startup_event():
 app.include_router(trades.router, prefix="/api", tags=["trades"])
 app.include_router(portfolios.router, prefix="/api", tags=["portfolios"])
 app.include_router(sync.router, prefix="/sync", tags=["sync"])
+app.include_router(news.router, prefix="/api", tags=["news"])
 
-# Finnhub client
-finnhub_client = finnhub.Client(api_key=os.getenv("FINNHUB_API_KEY"))
+# Market Data Aggregator client is imported and initialized in services/market_data_client.py
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -181,14 +187,62 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         manager.disconnect(user_id)
 
 # Background task to fetch and broadcast real-time prices
+_background_task = None
+_shutdown_event = asyncio.Event()
+
 async def fetch_and_broadcast_prices():
-    """Background task to fetch prices from Finnhub and broadcast to connected clients"""
+    """Background task to fetch prices from Market Data Aggregator and broadcast to connected clients"""
     
     # Popular stocks to fetch prices for
     default_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX']
+    consecutive_failures = 0
+    max_consecutive_failures = 5
     
-    while True:
+    logger.info("Starting price broadcasting background task")
+    
+    while not _shutdown_event.is_set():
         try:
+            # Health check before fetching data
+            if not await market_data_client.health_check():
+                logger.warning("Market Data Aggregator health check failed, using mock data")
+                consecutive_failures += 1
+                
+                # If too many consecutive failures, wait longer
+                if consecutive_failures >= max_consecutive_failures:
+                    delay = min(30, 2 ** min(consecutive_failures - max_consecutive_failures, 5))
+                    logger.error(f"Too many consecutive failures ({consecutive_failures}), waiting {delay}s")
+                    try:
+                        await asyncio.wait_for(_shutdown_event.wait(), timeout=delay)
+                        break  # Shutdown requested
+                    except asyncio.TimeoutError:
+                        pass
+                
+                # Use mock data when service is down
+                if manager.active_connections:
+                    all_symbols = set()
+                    for symbols in manager.subscribed_symbols.values():
+                        all_symbols.update(symbols)
+                    
+                    if not all_symbols:
+                        all_symbols = set(default_symbols)
+                    
+                    # Generate mock prices
+                    import random
+                    prices = {symbol: round(random.uniform(50, 500), 2) for symbol in all_symbols}
+                    
+                    if prices:
+                        await manager.broadcast_prices(prices)
+                        logger.info(f"Broadcasted mock prices for {len(prices)} symbols")
+                
+                # Wait before next attempt
+                delay = min(10, 2 ** min(consecutive_failures, 3))
+                try:
+                    await asyncio.wait_for(_shutdown_event.wait(), timeout=delay)
+                    break  # Shutdown requested
+                except asyncio.TimeoutError:
+                    continue
+            
+            # Service is healthy, proceed with normal operation
             if manager.active_connections:
                 # Get all subscribed symbols
                 all_symbols = set()
@@ -199,108 +253,153 @@ async def fetch_and_broadcast_prices():
                 if not all_symbols:
                     all_symbols = set(default_symbols)
                 
-                # Fetch prices from Finnhub
-                prices = {}
-                for symbol in all_symbols:
-                    try:
-                        quote = finnhub_client.quote(symbol)
-                        if quote and 'c' in quote:  # 'c' is current price
-                            prices[symbol] = float(quote['c'])
-                    except Exception as e:
-                        logger.error(f"Error fetching price for {symbol}: {e}")
-                        # Use mock data if Finnhub fails
-                        import random
-                        prices[symbol] = round(random.uniform(50, 500), 2)
-                
-                # Broadcast prices to all connected clients
-                if prices:
-                    await manager.broadcast_prices(prices)
-                    logger.info(f"Broadcasted prices for {len(prices)} symbols")
+                try:
+                    # Fetch prices from Market Data Aggregator
+                    quotes_dict = await market_data_client.get_quotes(list(all_symbols))
+                    
+                    # Convert to simple price dict for broadcasting
+                    prices = {}
+                    for symbol, quote in quotes_dict.items():
+                        prices[symbol] = float(quote.price)
+                    
+                    # Add fallback mock data for missing symbols
+                    for symbol in all_symbols:
+                        if symbol not in prices:
+                            logger.warning(f"No price data for {symbol}, using mock price")
+                            import random
+                            prices[symbol] = round(random.uniform(50, 500), 2)
+                    
+                    # Broadcast prices to all connected clients
+                    if prices:
+                        await manager.broadcast_prices(prices)
+                        logger.info(f"Broadcasted prices for {len(prices)} symbols")
+                    
+                    # Reset failure counter on success
+                    consecutive_failures = 0
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching quotes from Market Data Aggregator: {e}")
+                    consecutive_failures += 1
+                    
+                    # Use mock data as fallback
+                    import random
+                    prices = {symbol: round(random.uniform(50, 500), 2) for symbol in all_symbols}
+                    
+                    if prices:
+                        await manager.broadcast_prices(prices)
+                        logger.info(f"Broadcasted fallback mock prices for {len(prices)} symbols")
             
-            # Wait 2 seconds before next update
-            await asyncio.sleep(2)
+            # Wait 2 seconds before next update (or until shutdown)
+            try:
+                await asyncio.wait_for(_shutdown_event.wait(), timeout=2.0)
+                break  # Shutdown requested
+            except asyncio.TimeoutError:
+                pass
             
+        except asyncio.CancelledError:
+            logger.info("Price broadcasting task cancelled")
+            break
         except Exception as e:
-            logger.error(f"Error in price broadcasting task: {e}")
-            await asyncio.sleep(5)  # Wait longer on error
+            logger.error(f"Unexpected error in price broadcasting task: {e}")
+            consecutive_failures += 1
+            
+            # Exponential backoff on errors
+            delay = min(30, 2 ** min(consecutive_failures, 5))
+            logger.warning(f"Waiting {delay}s before retry due to error")
+            
+            try:
+                await asyncio.wait_for(_shutdown_event.wait(), timeout=delay)
+                break  # Shutdown requested
+            except asyncio.TimeoutError:
+                pass
+    
+    logger.info("Price broadcasting background task stopped")
 
 # Start background task when app starts
 @app.on_event("startup")
 async def start_background_tasks():
-    asyncio.create_task(fetch_and_broadcast_prices())
+    global _background_task
+    _background_task = asyncio.create_task(fetch_and_broadcast_prices())
+    logger.info("Background tasks started")
 
 # Additional API endpoints for stock data
 @app.get("/api/stocks/{symbol}/price")
 async def get_current_price(symbol: str, current_user=Depends(get_current_user)):
     """Get current price for a stock symbol"""
     try:
-        quote = finnhub_client.quote(symbol)
-        if quote and 'c' in quote:
-            return {"symbol": symbol, "price": float(quote['c'])}
+        quote = await market_data_client.get_quote(symbol)
+        if quote and quote.price > 0:
+            return {"symbol": symbol, "price": float(quote.price), "source": quote.source}
         else:
             raise HTTPException(status_code=404, detail=f"Price not found for symbol {symbol}")
     except Exception as e:
         logger.error(f"Error fetching price for {symbol}: {e}")
-        # Return mock data if Finnhub fails
+        # Return mock data if Market Data Aggregator fails
         import random
-        return {"symbol": symbol, "price": round(random.uniform(50, 500), 2)}
+        return {"symbol": symbol, "price": round(random.uniform(50, 500), 2), "source": "mock"}
 
 @app.get("/api/stocks/{symbol}/data")
 async def get_stock_data(symbol: str, current_user=Depends(get_current_user)):
-    """Get historical price data for charting"""
+    """Get historical price data for charting (mock data for now)"""
     try:
-        # Get last 30 days of data
-        import time
+        # TODO: Integrate with Market Data Aggregator for historical data
+        # For now, return mock data
+        import random
         from datetime import datetime, timedelta
         
-        end_time = int(time.time())
-        start_time = int((datetime.now() - timedelta(days=30)).timestamp())
-        
-        candles = finnhub_client.stock_candles(symbol, 'D', start_time, end_time)
-        
-        if candles and 't' in candles:
-            data = []
-            for i in range(len(candles['t'])):
-                data.append({
-                    'timestamp': candles['t'][i],
-                    'open': candles['o'][i],
-                    'high': candles['h'][i],
-                    'low': candles['l'][i],
-                    'close': candles['c'][i],
-                    'volume': candles['v'][i]
-                })
-            return data
-        else:
-            # Return mock data if Finnhub fails
-            import random
-            from datetime import datetime, timedelta
+        mock_data = []
+        base_price = random.uniform(100, 300)
+        for i in range(30):
+            date = datetime.now() - timedelta(days=29-i)
+            price_change = random.uniform(-5, 5)
+            base_price += price_change
             
-            mock_data = []
-            base_price = random.uniform(100, 300)
-            for i in range(30):
-                date = datetime.now() - timedelta(days=29-i)
-                price_change = random.uniform(-5, 5)
-                base_price += price_change
-                
-                open_price = base_price
-                high_price = base_price + random.uniform(0, 10)
-                low_price = base_price - random.uniform(0, 10)
-                close_price = base_price + random.uniform(-5, 5)
-                
-                mock_data.append({
-                    'timestamp': int(date.timestamp()),
-                    'open': round(open_price, 2),
-                    'high': round(high_price, 2),
-                    'low': round(low_price, 2),
-                    'close': round(close_price, 2),
-                    'volume': random.randint(1000000, 50000000)
-                })
+            open_price = base_price
+            high_price = base_price + random.uniform(0, 10)
+            low_price = base_price - random.uniform(0, 10)
+            close_price = base_price + random.uniform(-5, 5)
             
-            return mock_data
+            mock_data.append({
+                'timestamp': int(date.timestamp()),
+                'open': round(open_price, 2),
+                'high': round(high_price, 2),
+                'low': round(low_price, 2),
+                'close': round(close_price, 2),
+                'volume': random.randint(1000000, 50000000)
+            })
+        
+        logger.info(f"Generated mock historical data for {symbol}")
+        return mock_data
             
     except Exception as e:
-        logger.error(f"Error fetching stock data for {symbol}: {e}")
+        logger.error(f"Error generating stock data for {symbol}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch stock data")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    global _background_task
+    
+    # Signal background tasks to stop
+    _shutdown_event.set()
+    logger.info("Shutdown signal sent to background tasks")
+    
+    # Wait for background task to finish gracefully
+    if _background_task and not _background_task.done():
+        try:
+            await asyncio.wait_for(_background_task, timeout=10.0)
+            logger.info("Background task stopped gracefully")
+        except asyncio.TimeoutError:
+            logger.warning("Background task did not stop gracefully, cancelling")
+            _background_task.cancel()
+            try:
+                await _background_task
+            except asyncio.CancelledError:
+                pass
+    
+    # Close market data client
+    await market_data_client.close()
+    logger.info("Shutdown complete")
 
 if __name__ == "__main__":
     import uvicorn

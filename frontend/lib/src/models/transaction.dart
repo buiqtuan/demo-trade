@@ -45,8 +45,8 @@ class Transaction {
       userId: json['user_id'],
       symbol: json['symbol'],
       type: TransactionType.values.firstWhere(
-        (t) => t.name == json['type'],
-        orElse: () => TransactionType.buy,
+        (t) => t.name.toUpperCase() == json['type'].toString().toUpperCase(),
+        orElse: () => TransactionType.BUY,
       ),
       quantity: json['quantity'].toDouble(),
       price: json['price'].toDouble(),
@@ -72,8 +72,8 @@ class Transaction {
 @HiveType(typeId: 3)
 enum TransactionType {
   @HiveField(0)
-  buy,
+  BUY,
 
   @HiveField(1)
-  sell,
+  SELL,
 }

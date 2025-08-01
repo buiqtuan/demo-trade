@@ -77,6 +77,7 @@ class HoldingResponse(HoldingBase):
     total_cost: Decimal
     symbol: str = Field(..., description="Stock symbol from asset")
     name: str = Field(..., description="Company name from asset")
+    current_price: Optional[Decimal] = Field(default=Decimal("0.0"), description="Current market price")
     created_at: datetime
     updated_at: datetime
 

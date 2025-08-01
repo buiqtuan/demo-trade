@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../features/auth/auth_repository.dart';
+import '../config/app_config.dart';
 
 // WebSocket service provider
 final websocketServiceProvider = Provider<WebSocketService>((ref) {
@@ -15,8 +16,7 @@ class WebSocketService {
   final AuthRepository _authRepository;
   WebSocketChannel? _channel;
 
-  // TODO: Update this URL to your deployed backend or use local for development
-  static const String _baseWsUrl = 'ws://localhost:8000';
+  static const String _baseWsUrl = AppConfig.wsBaseUrl;
 
   // Stream controller for real-time price data
   final _priceController = StreamController<Map<String, double>>.broadcast();

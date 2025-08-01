@@ -17,6 +17,15 @@ from ..core.logging_config import create_logger
 from ..services.cache import cache_service
 from ..services.data_aggregator import aggregator_service
 
+# Import shared models with proper fallback
+try:
+    from shared_models.market_data import NewsArticle, NewsResponse
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from shared_models.market_data import NewsArticle, NewsResponse
+
 logger = create_logger(__name__)
 
 # Create API router
@@ -374,6 +383,99 @@ async def get_cache_stats():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve cache stats: {str(e)}"
+        )
+
+
+@router.get("/v1/news/general", response_model=NewsResponse)
+async def get_general_news():
+    """
+    Get general market news.
+    
+    Returns:
+        List of general market news articles from cache
+    """
+    try:
+        logger.info("General news request received")
+        
+        # Get general news from cache
+        articles = await cache_service.get_general_news()
+        
+        # Log cache performance
+        cache_hit = len(articles) > 0
+        logger.info("General news retrieved from cache", extra={
+            "count": len(articles),
+            "cache_hit": cache_hit
+        })
+        
+        return NewsResponse(
+            articles=articles,
+            total=len(articles),
+            cache_hit=cache_hit,
+            symbol=None
+        )
+        
+    except Exception as e:
+        logger.error("Failed to retrieve general news", extra={
+            "error": str(e)
+        })
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve general news: {str(e)}"
+        )
+
+
+@router.get("/v1/news/{symbol}", response_model=NewsResponse)
+async def get_company_news(symbol: str):
+    """
+    Get company-specific news for a symbol.
+    
+    Args:
+        symbol: Stock symbol to get news for (e.g., "AAPL", "GOOGL")
+    
+    Returns:
+        List of news articles for the specified company from cache
+    """
+    try:
+        symbol = symbol.strip().upper()
+        
+        if not symbol:
+            raise HTTPException(
+                status_code=400,
+                detail="Symbol is required"
+            )
+        
+        logger.info("Company news request received", extra={"symbol": symbol})
+        
+        # Get company news from cache
+        articles = await cache_service.get_company_news(symbol)
+        
+        # Log cache performance
+        cache_hit = len(articles) > 0
+        logger.info("Company news retrieved from cache", extra={
+            "symbol": symbol,
+            "count": len(articles),
+            "cache_hit": cache_hit
+        })
+        
+        return NewsResponse(
+            articles=articles,
+            total=len(articles),
+            cache_hit=cache_hit,
+            symbol=symbol
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+        
+    except Exception as e:
+        logger.error("Failed to retrieve company news", extra={
+            "symbol": symbol,
+            "error": str(e)
+        })
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve company news: {str(e)}"
         )
 
 

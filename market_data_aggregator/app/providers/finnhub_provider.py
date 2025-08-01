@@ -3,7 +3,7 @@ Finnhub data provider implementation.
 Provides stock market data using Finnhub API.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import finnhub
 
@@ -11,6 +11,15 @@ from .base import BaseDataProvider, ProviderError, AuthenticationError
 from ..api.schemas import Asset, Quote, AssetType, DataProvider
 from ..core.config import settings
 from ..core.logging_config import create_logger
+
+# Import shared models with proper fallback
+try:
+    from shared_models.market_data import NewsArticle
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    from shared_models.market_data import NewsArticle
 
 logger = create_logger(__name__)
 
@@ -191,3 +200,167 @@ class FinnhubProvider(BaseDataProvider):
                 "error": str(e)
             })
             raise ProviderError(f"Failed to fetch asset list: {str(e)}", self.name)
+    
+    async def get_general_news(self) -> List[NewsArticle]:
+        """Get general market news from Finnhub."""
+        if not self._client:
+            await self.connect()
+        
+        try:
+            # Get general market news
+            news_data = await self._make_request(
+                method="GET",
+                url=f"{self.base_url}/news",
+                params={
+                    "category": "general",
+                    "token": self.api_key
+                }
+            )
+            
+            if not news_data:
+                logger.warning("No general news data received from Finnhub", extra={
+                    "provider": self.name
+                })
+                return []
+            
+            articles = []
+            for item in news_data[:50]:  # Limit to 50 articles
+                try:
+                    article = self._create_news_article_from_finnhub(item)
+                    if article:
+                        articles.append(article)
+                except Exception as e:
+                    logger.warning("Failed to process news article", extra={
+                        "provider": self.name,
+                        "error": str(e),
+                        "article_data": item
+                    })
+                    continue
+            
+            logger.info("Retrieved general news from Finnhub", extra={
+                "provider": self.name,
+                "count": len(articles)
+            })
+            
+            return articles
+            
+        except Exception as e:
+            logger.error("Failed to fetch general news from Finnhub", extra={
+                "provider": self.name,
+                "error": str(e)
+            })
+            raise ProviderError(f"Failed to fetch general news: {str(e)}", self.name)
+    
+    async def get_company_news(self, symbol: str) -> List[NewsArticle]:
+        """Get company-specific news from Finnhub."""
+        if not symbol or not symbol.strip():
+            return []
+        
+        if not self._client:
+            await self.connect()
+        
+        try:
+            # Calculate date range (last 30 days)
+            end_date = datetime.utcnow()
+            start_date = end_date - timedelta(days=30)
+            
+            # Get company news
+            news_data = await self._make_request(
+                method="GET",
+                url=f"{self.base_url}/company-news",
+                params={
+                    "symbol": symbol.upper(),
+                    "from": start_date.strftime("%Y-%m-%d"),
+                    "to": end_date.strftime("%Y-%m-%d"),
+                    "token": self.api_key
+                }
+            )
+            
+            if not news_data:
+                logger.info("No company news data received from Finnhub", extra={
+                    "provider": self.name,
+                    "symbol": symbol
+                })
+                return []
+            
+            articles = []
+            for item in news_data[:30]:  # Limit to 30 articles
+                try:
+                    article = self._create_news_article_from_finnhub(item, symbol)
+                    if article:
+                        articles.append(article)
+                except Exception as e:
+                    logger.warning("Failed to process company news article", extra={
+                        "provider": self.name,
+                        "symbol": symbol,
+                        "error": str(e),
+                        "article_data": item
+                    })
+                    continue
+            
+            logger.info("Retrieved company news from Finnhub", extra={
+                "provider": self.name,
+                "symbol": symbol,
+                "count": len(articles)
+            })
+            
+            return articles
+            
+        except Exception as e:
+            logger.error("Failed to fetch company news from Finnhub", extra={
+                "provider": self.name,
+                "symbol": symbol,
+                "error": str(e)
+            })
+            raise ProviderError(f"Failed to fetch company news for {symbol}: {str(e)}", self.name)
+    
+    def _create_news_article_from_finnhub(self, item: Dict, symbol: Optional[str] = None) -> Optional[NewsArticle]:
+        """Create NewsArticle from Finnhub news data."""
+        try:
+            # Validate required fields
+            if not all(key in item for key in ['headline', 'url', 'datetime']):
+                logger.warning("Missing required fields in Finnhub news item", extra={
+                    "provider": self.name,
+                    "item": item
+                })
+                return None
+            
+            title = item.get('headline', '').strip()
+            url = item.get('url', '').strip()
+            
+            if not title or not url:
+                return None
+            
+            # Convert timestamp
+            timestamp = datetime.utcfromtimestamp(item['datetime'])
+            
+            # Extract other fields
+            summary = item.get('summary', '').strip() or None
+            source = item.get('source', 'Finnhub').strip()
+            category = item.get('category', 'general').strip()
+            
+            # Handle symbols
+            symbols = []
+            if symbol:
+                symbols = [symbol.upper()]
+            elif 'related' in item and item['related']:
+                symbols = [s.upper() for s in item['related'] if s]
+            
+            return NewsArticle(
+                title=title,
+                summary=summary,
+                url=url,
+                source=source,
+                published_at=timestamp,
+                symbols=symbols,
+                category=category,
+                sentiment=None  # Finnhub doesn't provide sentiment in basic response
+            )
+            
+        except Exception as e:
+            logger.warning("Error creating news article from Finnhub data", extra={
+                "provider": self.name,
+                "error": str(e),
+                "item": item
+            })
+            return None

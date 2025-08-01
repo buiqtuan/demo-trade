@@ -1,19 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
-import finnhub
 import os
 from decimal import Decimal
+import logging
 
 from database import get_db
 from dependencies import get_current_user, FirebaseUser, check_user_permission
 from schemas import TradeRequest, TradeResponse, TransactionResponse, APIResponse
+from services.market_data_client import market_data_client, MarketDataValidationError, MarketDataConnectionError
 import crud
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Finnhub client for getting real-time prices
-finnhub_client = finnhub.Client(api_key=os.getenv("FINNHUB_API_KEY"))
 
 @router.post("/execute", response_model=TradeResponse)
 async def execute_trade(
@@ -24,12 +23,28 @@ async def execute_trade(
     """
     Execute a trade (buy or sell) with perfect execution logic.
     
-    - Gets current market price from Finnhub API
+    - Gets current market price from Market Data Aggregator
     - Executes trade at market price
     - Updates user's portfolio and holdings
     - Records transaction in database
     """
     try:
+        # Input validation
+        if not trade_request.ticker or not trade_request.ticker.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ticker symbol cannot be empty"
+            )
+        
+        if trade_request.quantity <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quantity must be greater than 0"
+            )
+        
+        # Normalize ticker symbol
+        normalized_ticker = trade_request.ticker.strip().upper()
+        
         # Get user's portfolio
         portfolio = crud.get_user_portfolio(db, current_user.uid)
         if not portfolio:
@@ -41,23 +56,36 @@ async def execute_trade(
         # Get or create the asset
         asset = crud.get_or_create_asset(
             db, 
-            symbol=trade_request.ticker,
-            name=trade_request.ticker  # Will be updated with real name if available
+            symbol=normalized_ticker,
+            name=normalized_ticker  # Will be updated with real name if available
         )
         
-        # Get current market price from Finnhub
+        # Get current market price from Market Data Aggregator
         try:
-            quote = finnhub_client.quote(trade_request.ticker)
-            if quote and 'c' in quote and quote['c'] > 0:
-                current_price = Decimal(str(quote['c']))
+            quote = await market_data_client.get_quote(normalized_ticker)
+            if quote and quote.price > 0:
+                current_price = Decimal(str(quote.price))
+                logger.info(f"Got price for {normalized_ticker}: ${current_price} from {quote.source}")
             else:
-                # Fallback to mock price if Finnhub fails
-                raise Exception("No price data from Finnhub")
-        except Exception as e:
-            print(f"Error fetching price from Finnhub: {e}")
+                # Fallback to mock price if no data available
+                raise Exception("No price data from market data aggregator")
+        except MarketDataValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid ticker symbol: {str(e)}"
+            )
+        except MarketDataConnectionError as e:
+            logger.error(f"Market data service unavailable: {e}")
             # Use mock price for development/testing
             import random
             current_price = Decimal(str(round(random.uniform(50, 500), 2)))
+            logger.warning(f"Using mock price for {normalized_ticker}: ${current_price}")
+        except Exception as e:
+            logger.error(f"Error fetching price from market data aggregator: {e}")
+            # Use mock price for development/testing
+            import random
+            current_price = Decimal(str(round(random.uniform(50, 500), 2)))
+            logger.warning(f"Using mock price for {normalized_ticker}: ${current_price}")
         
         # Execute the trade based on action
         if trade_request.action.upper() == "BUY":
@@ -92,7 +120,7 @@ async def execute_trade(
             total_amount=trade_request.quantity * current_price,
             new_cash_balance=result["new_cash_balance"],
             total_portfolio_value=total_portfolio_value,
-            symbol=trade_request.ticker.upper(),
+            symbol=normalized_ticker,
             quantity=trade_request.quantity,
             action=trade_request.action.upper()
         )
@@ -227,6 +255,16 @@ async def validate_trade(
     Useful for frontend validation before submitting the actual trade.
     """
     try:
+        # Input validation
+        if not ticker or not ticker.strip():
+            return APIResponse(
+                success=False,
+                message="Ticker symbol cannot be empty"
+            )
+        
+        # Normalize ticker symbol
+        normalized_ticker = ticker.strip().upper()
+        
         # Basic validation
         if action.upper() not in ["BUY", "SELL"]:
             return APIResponse(
@@ -248,14 +286,19 @@ async def validate_trade(
                 message="Portfolio not found"
             )
         
-        # Get current price
+        # Get current price from Market Data Aggregator
         try:
-            quote = finnhub_client.quote(ticker)
-            if quote and 'c' in quote and quote['c'] > 0:
-                current_price = Decimal(str(quote['c']))
+            quote = await market_data_client.get_quote(normalized_ticker)
+            if quote and quote.price > 0:
+                current_price = Decimal(str(quote.price))
             else:
                 current_price = Decimal("100.00")  # Mock price
-        except:
+        except MarketDataValidationError as e:
+            return APIResponse(
+                success=False,
+                message=f"Invalid ticker symbol: {str(e)}"
+            )
+        except (MarketDataConnectionError, Exception):
             current_price = Decimal("100.00")  # Mock price
         
         if action.upper() == "BUY":
@@ -267,7 +310,7 @@ async def validate_trade(
                 )
         elif action.upper() == "SELL":
             # Check if user has enough shares
-            asset = crud.get_asset_by_symbol(db, ticker)
+            asset = crud.get_asset_by_symbol(db, normalized_ticker)
             if asset:
                 holding = crud.get_holding(db, portfolio.portfolio_id, asset.asset_id)
                 if not holding or holding.quantity < Decimal(str(quantity)):
