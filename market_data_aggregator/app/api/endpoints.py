@@ -479,34 +479,4 @@ async def get_company_news(symbol: str):
         )
 
 
-# Custom exception handlers
-@router.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    """Handle HTTP exceptions with structured error response."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=ErrorResponse(
-            error=exc.detail,
-            error_code=f"HTTP_{exc.status_code}",
-            details={"status_code": exc.status_code}
-        ).dict()
-    )
-
-
-@router.exception_handler(Exception)
-async def general_exception_handler(request, exc: Exception):
-    """Handle general exceptions with structured error response."""
-    logger.error("Unhandled exception in API endpoint", extra={
-        "error": str(exc),
-        "path": request.url.path,
-        "method": request.method
-    })
-    
-    return JSONResponse(
-        status_code=500,
-        content=ErrorResponse(
-            error="Internal server error",
-            error_code="INTERNAL_ERROR",
-            details={"message": "An unexpected error occurred"}
-        ).dict()
-    )
+# Exception handlers are defined in main.py for the FastAPI app
