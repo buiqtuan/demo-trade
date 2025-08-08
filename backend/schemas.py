@@ -1,19 +1,24 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
 # User Schemas
 class UserBase(BaseModel):
-    email: str = Field(..., description="User's email address")
+    email: EmailStr = Field(..., description="User's email address")
     username: str = Field(..., min_length=3, max_length=50, description="User's username")
 
 class UserCreate(UserBase):
     user_id: str = Field(..., description="Firebase UID")
+    display_name: Optional[str] = Field(None, description="User's display name")
+    avatar_url: Optional[str] = Field(None, description="User's avatar URL")
 
 class UserResponse(UserBase):
     user_id: str
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
     is_active: bool
 
     class Config:
@@ -86,7 +91,7 @@ class HoldingResponse(HoldingBase):
 
 # Transaction Schemas
 class TransactionBase(BaseModel):
-    transaction_type: str = Field(..., regex="^(BUY|SELL)$", description="Transaction type")
+    transaction_type: str = Field(..., pattern="^(BUY|SELL)$", description="Transaction type")
     quantity: Decimal = Field(..., gt=0, description="Number of shares")
     price_per_unit: Decimal = Field(..., gt=0, description="Price per share")
     total_amount: Decimal = Field(..., description="Total transaction amount")
@@ -116,7 +121,7 @@ class TransactionResponse(TransactionBase):
 class TradeRequest(BaseModel):
     ticker: str = Field(..., max_length=10, description="Stock symbol to trade")
     quantity: Decimal = Field(..., gt=0, description="Number of shares to trade")
-    action: str = Field(..., regex="^(BUY|SELL)$", description="Trade action")
+    action: str = Field(..., pattern="^(BUY|SELL)$", description="Trade action")
 
 class TradeResponse(BaseModel):
     message: str

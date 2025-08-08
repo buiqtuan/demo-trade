@@ -153,13 +153,56 @@ async def get_user_stats(
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 async def get_leaderboard(
     limit: int = 100,
-    current_user: FirebaseUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Get trading leaderboard showing top performing users.
+    Public endpoint - no authentication required.
     
     Returns users ranked by portfolio performance (total return percentage).
+    Only shows public information (usernames, performance stats).
+    """
+    try:
+        # Get leaderboard data
+        leaderboard_data = crud.get_leaderboard(db, limit)
+        
+        # Convert to response format
+        entries = []
+        for entry in leaderboard_data:
+            entries.append(LeaderboardEntry(
+                rank=entry["rank"],
+                user_id=entry["user_id"],
+                username=entry["username"],
+                total_return_percentage=Decimal(str(entry["total_return_percentage"])),
+                portfolio_value=Decimal(str(entry["portfolio_value"])),
+                win_rate=entry["win_rate"],
+                total_trades=entry["total_trades"]
+            ))
+        
+        return LeaderboardResponse(
+            entries=entries,
+            total_users=len(entries),
+            user_rank=None  # No user rank for public access
+        )
+        
+    except Exception as e:
+        print(f"Error fetching leaderboard: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching leaderboard data"
+        )
+
+@router.get("/leaderboard/my-rank", response_model=LeaderboardResponse)
+async def get_leaderboard_with_my_rank(
+    limit: int = 100,
+    current_user: FirebaseUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get trading leaderboard with current user's rank.
+    Authenticated endpoint - requires user login.
+    
+    Returns users ranked by portfolio performance and the current user's rank.
     """
     try:
         # Get leaderboard data

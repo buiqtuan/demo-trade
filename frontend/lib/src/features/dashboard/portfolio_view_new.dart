@@ -486,7 +486,7 @@ class _PortfolioViewNewState extends ConsumerState<PortfolioViewNew>
   }
 
   Widget _buildTransactionCard(Transaction transaction) {
-    final isBuy = transaction.type == TransactionType.buy;
+    final isBuy = transaction.type == TransactionType.BUY;
     final color = isBuy ? Colors.green : Colors.red;
 
     return Container(

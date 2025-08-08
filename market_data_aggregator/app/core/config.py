@@ -11,6 +11,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
+    server_host: str = Field(default="0.0.0.0", env="SERVER_HOST")
+    server_port: int = Field(default=8000, env="SERVER_PORT")
+
     # Application metadata
     app_name: str = Field(default="Market Data Aggregator", env="APP_NAME")
     app_version: str = Field(default="1.0.0", env="APP_VERSION")
@@ -92,7 +95,7 @@ class Settings(BaseSettings):
     
     class Config:
         """Pydantic configuration."""
-        env_file = "market_data_aggregator/.env"
+        env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
 

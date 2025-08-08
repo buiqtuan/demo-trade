@@ -101,7 +101,7 @@ class PortfolioRepository {
 
     Portfolio updatedPortfolio;
 
-    if (type == TransactionType.buy) {
+    if (type == TransactionType.BUY) {
       // Check if user has enough cash
       if (currentPortfolio.cashBalance < totalCost) {
         throw Exception('Insufficient funds');

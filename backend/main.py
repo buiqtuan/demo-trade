@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from database import get_db, engine
 from models import Base
 from dependencies import get_current_user
-from routers import trades, portfolios, sync, news
+from routers import trades, portfolios, sync, news, auth, market
 from services.market_data_client import market_data_client
 from middleware.error_handler import global_exception_handler, validation_exception_handler
 
@@ -49,6 +49,8 @@ async def startup_event():
     logger.info("Database tables created successfully")
 
 # Include routers
+app.include_router(market.router, prefix="/api", tags=["market-data"])
+app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(trades.router, prefix="/api", tags=["trades"])
 app.include_router(portfolios.router, prefix="/api", tags=["portfolios"])
 app.include_router(sync.router, prefix="/sync", tags=["sync"])
@@ -324,7 +326,7 @@ async def start_background_tasks():
 
 # Additional API endpoints for stock data
 @app.get("/api/stocks/{symbol}/price")
-async def get_current_price(symbol: str, current_user=Depends(get_current_user)):
+async def get_current_price(symbol: str):
     """Get current price for a stock symbol"""
     try:
         quote = await market_data_client.get_quote(symbol)
@@ -339,7 +341,7 @@ async def get_current_price(symbol: str, current_user=Depends(get_current_user))
         return {"symbol": symbol, "price": round(random.uniform(50, 500), 2), "source": "mock"}
 
 @app.get("/api/stocks/{symbol}/data")
-async def get_stock_data(symbol: str, current_user=Depends(get_current_user)):
+async def get_stock_data(symbol: str):
     """Get historical price data for charting (mock data for now)"""
     try:
         # TODO: Integrate with Market Data Aggregator for historical data

@@ -5,6 +5,7 @@ import 'markets_view.dart';
 import 'watchlist_view.dart';
 import 'portfolio_view_new.dart';
 import 'profile_view.dart';
+import 'demo_auth_widget.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   @override
@@ -89,6 +90,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           fontWeight: FontWeight.bold,
           color: Colors.grey[800],
         ),
+        actions: [
+          Padding(
+            padding: EdgeInsets.only(right: 16),
+            child: DemoAuthWidget(),
+          ),
+        ],
       ),
       body: PageView(
         controller: _pageController,

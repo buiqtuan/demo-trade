@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import datetime
 
 from models import User, Portfolio, Asset, Holding, Transaction, UserStats, Watchlist, MarketData
-from schemas import UserCreate, PortfolioCreate, AssetCreate, HoldingCreate, TransactionCreate
+from schemas import UserCreate, PortfolioCreate, AssetCreate, HoldingCreate, TransactionCreate, WatchlistCreate
 
 # User CRUD operations
 def get_user(db: Session, user_id: str) -> Optional[User]:
@@ -49,11 +49,16 @@ def update_user(db: Session, user_id: str, **kwargs) -> Optional[User]:
     if db_user:
         for key, value in kwargs.items():
             setattr(db_user, key, value)
+        db_user.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(db_user)
     return db_user
 
 # Portfolio CRUD operations
+def get_portfolio_by_user_id(db: Session, user_id: str) -> Optional[Portfolio]:
+    """Get portfolio by user ID"""
+    return db.query(Portfolio).filter(Portfolio.user_id == user_id).first()
+
 def get_user_portfolio(db: Session, user_id: str) -> Optional[Portfolio]:
     """Get user's portfolio with holdings"""
     return db.query(Portfolio).options(
@@ -73,6 +78,17 @@ def update_portfolio_cash(db: Session, portfolio_id: int, new_balance: Decimal) 
     db_portfolio = db.query(Portfolio).filter(Portfolio.portfolio_id == portfolio_id).first()
     if db_portfolio:
         db_portfolio.cash_balance = new_balance
+        db.commit()
+        db.refresh(db_portfolio)
+    return db_portfolio
+
+def update_portfolio(db: Session, portfolio_id: int, **kwargs) -> Optional[Portfolio]:
+    """Update portfolio information"""
+    db_portfolio = db.query(Portfolio).filter(Portfolio.portfolio_id == portfolio_id).first()
+    if db_portfolio:
+        for key, value in kwargs.items():
+            setattr(db_portfolio, key, value)
+        db_portfolio.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(db_portfolio)
     return db_portfolio
@@ -114,6 +130,18 @@ def search_assets(db: Session, query: str, limit: int = 10) -> List[Asset]:
     ).filter(Asset.is_active == True).limit(limit).all()
 
 # Holding CRUD operations
+def get_holdings_by_portfolio_id(db: Session, portfolio_id: int) -> List[Holding]:
+    """Get all holdings by portfolio ID"""
+    return db.query(Holding).options(
+        joinedload(Holding.asset)
+    ).filter(Holding.portfolio_id == portfolio_id).all()
+
+def get_holding_by_portfolio_and_asset(db: Session, portfolio_id: int, asset_id: int) -> Optional[Holding]:
+    """Get holding by portfolio and asset"""
+    return db.query(Holding).filter(
+        and_(Holding.portfolio_id == portfolio_id, Holding.asset_id == asset_id)
+    ).first()
+
 def get_user_holdings(db: Session, portfolio_id: int) -> List[Holding]:
     """Get all holdings for a portfolio"""
     return db.query(Holding).options(
@@ -156,6 +184,18 @@ def delete_holding(db: Session, holding_id: int) -> bool:
     return False
 
 # Transaction CRUD operations
+def get_transactions_by_portfolio_id(db: Session, portfolio_id: int) -> List[Transaction]:
+    """Get all transactions by portfolio ID"""
+    return db.query(Transaction).options(
+        joinedload(Transaction.asset)
+    ).filter(Transaction.portfolio_id == portfolio_id).all()
+
+def get_transaction_by_external_id(db: Session, external_id: str) -> Optional[Transaction]:
+    """Get transaction by external ID (from execution_notes)"""
+    return db.query(Transaction).filter(
+        Transaction.execution_notes.contains(f"Original ID: {external_id}")
+    ).first()
+
 def create_transaction(db: Session, transaction: TransactionCreate) -> Transaction:
     """Create new transaction"""
     db_transaction = Transaction(**transaction.dict())
@@ -391,6 +431,30 @@ def get_user_rank(db: Session, user_id: str) -> Optional[int]:
     return None
 
 # Watchlist CRUD operations
+def get_watchlist_by_user_id(db: Session, user_id: str) -> List[Watchlist]:
+    """Get watchlist by user ID"""
+    return db.query(Watchlist).options(
+        joinedload(Watchlist.asset)
+    ).filter(Watchlist.user_id == user_id).all()
+
+def get_watchlist_item(db: Session, user_id: str, asset_id: int) -> Optional[Watchlist]:
+    """Get specific watchlist item"""
+    return db.query(Watchlist).filter(
+        and_(Watchlist.user_id == user_id, Watchlist.asset_id == asset_id)
+    ).first()
+
+def create_watchlist_item(db: Session, watchlist_create) -> Watchlist:
+    """Create watchlist item"""
+    db_watchlist = Watchlist(
+        user_id=watchlist_create.user_id,
+        asset_id=watchlist_create.asset_id,
+        notes=watchlist_create.notes
+    )
+    db.add(db_watchlist)
+    db.commit()
+    db.refresh(db_watchlist)
+    return db_watchlist
+
 def get_user_watchlist(db: Session, user_id: str) -> List[Watchlist]:
     """Get user's watchlist"""
     return db.query(Watchlist).options(

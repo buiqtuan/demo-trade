@@ -11,12 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import time
 
-from .core.config import settings
-from .core.logging_config import setup_logging, create_logger
-from .api.endpoints import router as api_router
-from .services.data_aggregator import aggregator_service
-from .services.cache import cache_service
-from .api.schemas import ErrorResponse
+from app.core.config import settings
+from app.core.logging_config import setup_logging, create_logger
+from app.api.endpoints import router as api_router
+from app.services.data_aggregator import aggregator_service
+from app.services.cache import cache_service
+from app.api.schemas import ErrorResponse
 
 # Setup logging first
 setup_logging()
@@ -327,8 +327,8 @@ if __name__ == "__main__":
     # Run the application
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=settings.server_host,
+        port=settings.server_port,
         reload=settings.debug,
         log_level=settings.log_level.lower(),
         access_log=True

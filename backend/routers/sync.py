@@ -42,18 +42,13 @@ async def migrate_local_data(
                 detail="User ID mismatch - can only migrate your own data"
             )
         
-        # Check if user already exists in database
+        # User MUST already exist (should be created during registration)
         user = crud.get_user(db, current_user)
         if not user:
-            # Create user if they don't exist
-            from schemas import UserCreate
-            user_create = UserCreate(
-                user_id=current_user,
-                email="",  # Will be updated when we have user profile info
-                username=f"user_{current_user[:8]}"  # Temporary username
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found. Please complete registration first by calling /api/auth/register"
             )
-            user = crud.create_user(db, user_create)
-            logger.info(f"Created new user: {current_user}")
         
         migrated_items: Dict[str, int] = {
             "portfolio": 0,
@@ -66,23 +61,19 @@ async def migrate_local_data(
         if sync_request.data.portfolio:
             portfolio_data = sync_request.data.portfolio
             
-            # Get or create portfolio for the user
+            # Portfolio should already exist from registration
             portfolio = crud.get_portfolio_by_user_id(db, current_user)
-            if portfolio:
-                # Update existing portfolio
-                crud.update_portfolio(db, portfolio.portfolio_id, 
-                                    cash_balance=portfolio_data.cash_balance,
-                                    initial_balance=portfolio_data.initial_balance)
-                logger.info(f"Updated portfolio for user {current_user}")
-            else:
-                # Create new portfolio
-                portfolio_create = PortfolioCreate(
-                    user_id=current_user,
-                    cash_balance=portfolio_data.cash_balance,
-                    initial_balance=portfolio_data.initial_balance
+            if not portfolio:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="User portfolio not found. Please contact support - this should not happen for registered users."
                 )
-                portfolio = crud.create_portfolio(db, portfolio_create)
-                logger.info(f"Created new portfolio for user {current_user}")
+            
+            # Update existing portfolio with migrated data
+            crud.update_portfolio(db, portfolio.portfolio_id, 
+                                cash_balance=portfolio_data.cash_balance,
+                                initial_balance=portfolio_data.initial_balance)
+            logger.info(f"Updated portfolio for user {current_user}")
             
             migrated_items["portfolio"] = 1
 

@@ -21,8 +21,8 @@ This service is designed as a standalone microservice that:
 │ • Yahoo Finance │────│ • Circuit       │────│ • Redis         │
 │ • Finnhub       │    │   Breakers      │    │ • Fast Queries  │
 │ • CoinGecko     │    │ • Fallback      │    │ • TTL Management│
-│ • Alpha Vantage │    │   Logic         │    │                 │
-│ • CoinMarketCap │    │ • Data Normalization  │                 │
+│ • Alpha Vantage │    │   Logic         │    │ • Data Normalization  │
+│ • CoinMarketCap │    │                 │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                 ↓
                        ┌─────────────────┐
@@ -193,8 +193,7 @@ The service implements a circuit breaker for each data provider:
 
 3. **Run the application:**
    ```bash
-   cd app
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
 
 ### Testing

@@ -8,4 +8,10 @@ class AppConfig {
     'WS_BASE_URL',
     defaultValue: 'ws://localhost:8000',
   );
+
+  // WebSocket URL for real-time data
+  static const String wsUrl = String.fromEnvironment(
+    'WS_URL',
+    defaultValue: 'ws://localhost:8000/ws/prices',
+  );
 }
